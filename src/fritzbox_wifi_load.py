@@ -22,110 +22,113 @@
 """
 
 import os
-import sys
-from FritzboxInterface import FritzboxInterface
+from fritzbox_interface import FritzboxInterface
+from fritzbox_munin_plugin_interface import MuninPluginInterface, main_handler
+
+# @todo refactor to use the TR-064 protocol with fritzconnection
 
 PAGE = 'data.lua'
 PARAMS = {'xhr':1, 'lang':'de', 'page':'chan', 'xhrId':'environment', 'useajax':1, 'no_sidrenew':None}
 
-def average_load(datapoints):
+
+def average_load(datapoints: list[str]) -> tuple[int, int]:
   """ average send and receive series """
   recv = 0
   send = 0
   for d in datapoints:
-    parts = d.split(u':')
+    parts = d.split(':')
     recv += int(parts[0])
     send += int(parts[1])
   datalen = len(datapoints)
   recv //= datalen
   send //= datalen
-  return (recv,send)
+  return (recv, send)
 
-def get_freqs():
-  return os.getenv('wifi_freqs').split(' ')
 
-def get_modes():
-  return os.getenv('wifi_modes').split(' ')
+def get_freqs() -> list[str]:
+  return os.getenv('wifi_freqs').split(' ') if os.getenv('wifi_freqs') else []
 
-def print_wifi_load():
-  """get the current wifi bandwidth usage"""
 
-  # set up the graphs (load the 10-minute view)
-  fritzboxHelper = FritzboxInterface()
-  # download the graphs
-  jsondata = fritzboxHelper.postPageWithLogin(PAGE, data=PARAMS)['data']
+def get_modes() -> list[str]:
+  return os.getenv('wifi_modes').split(' ') if os.getenv('wifi_modes') else []
 
-  freqs = get_freqs()
-  modes = get_modes()
-  scanlist = jsondata['scanlist']
 
-  # parse data from all available frequencies
-  for freq in freqs:
-    band_id = freq + 'ghz'
-    freqdata = jsondata[band_id]
-    if freqdata == None:
-      continue
-    if 'freqs' in modes:
-      airtimedata = freqdata['airtimedata']
-      datapoints = airtimedata.split(',')[3:303]
-      average_recv, average_send = average_load(datapoints)
-      print('multigraph bandwidth_' + freq + 'ghz')
-      print(freq + 'ghz_recv.value ' + str(average_recv))
-      print(freq + 'ghz_send.value ' + str(average_send))
-    if 'neighbors' in modes:
-      own_chans = freqdata['usedChannels']
-      sameChan = 0
-      otherChans = 0
-      for ap in scanlist:
-        # only count APs on the current band
-        if ap['bandId'] != band_id: continue
-        # don't count the FritzBox's own AP
-        if not ap.get('isEnvNet', False): continue
-        chan = ap['channel']
-        if chan in own_chans:
-          sameChan+=1
-        else:
-          otherChans+=1
-      print('multigraph neighbors_' + freq + 'ghz')
-      print(freq + 'ghz_samechan.value ' + str(sameChan))
-      print(freq + 'ghz_otherchans.value ' + str(otherChans))
+class FritzboxWifiLoad(MuninPluginInterface):
+  __connection = None
 
-def print_config():
-  freqs = get_freqs()
-  modes = get_modes()
-  for freq in freqs:
-    if 'freqs' in modes:
-      print("multigraph bandwidth_" + freq + 'ghz')
-      print("graph_title WIFI " + freq + "GHz bandwidth usage")
-      print("graph_vlabel percent")
-      print("graph_category network")
-      print("graph_args --lower-limit 0 --upper-limit 100 --rigid")
-      print("graph_order " + freq + "ghz_recv " + freq + "ghz_send")
-      for p,l in {'recv' : 'receive', 'send': 'send'}.items():
-        multiP = freq + 'ghz_' + p
-        print(multiP + '.label ' + l)
-        print(multiP + '.type GAUGE')
-        print(multiP + '.draw AREASTACK')
-    if 'neighbors' in modes:
-      print("multigraph neighbors_" + freq + 'ghz')
-      print("graph_title WIFI " + freq + "GHz neighbor APs")
-      print("graph_vlabel number of APs")
-      print("graph_category network")
-      print("graph_args --lower-limit 0")
-      print("graph_order " + freq + "ghz_samechan " + freq + "ghz_otherchans")
-      for p,l in {'samechan' : 'same channel', 'otherchans': 'other channels'}.items():
-        multiP = freq + 'ghz_' + p
-        print(multiP + '.label ' + l)
-        print(multiP + '.type GAUGE')
-        print(multiP + '.draw AREASTACK')
+  def __init__(self, fritzbox_interface: FritzboxInterface):
+    self.__connection = fritzbox_interface
+
+  def print_stats(self) -> None:
+    """get the current wifi bandwidth usage"""
+
+    # download the graphs
+    jsondata = self.__connection.post_page_with_login(PAGE, data=PARAMS)['data']
+
+    freqs = get_freqs()
+    modes = get_modes()
+    scanlist = jsondata['scanlist']
+
+    # parse data from all available frequencies
+    for freq in freqs:
+      band_id = freq + 'ghz'
+      freqdata = jsondata.get(band_id)
+      if freqdata is None:
+        continue
+      if 'freqs' in modes:
+        airtimedata = freqdata['airtimedata']
+        datapoints = airtimedata.split(',')[3:303]
+        average_recv, average_send = average_load(datapoints)
+        print('multigraph bandwidth_' + freq + 'ghz')
+        print(freq + 'ghz_recv.value ' + str(average_recv))
+        print(freq + 'ghz_send.value ' + str(average_send))
+      if 'neighbors' in modes:
+        own_chans = freqdata['usedChannels']
+        sameChan = 0
+        otherChans = 0
+        for ap in scanlist:
+          # only count APs on the current band
+          if ap['bandId'] != band_id: continue
+          # don't count the FritzBox's own AP
+          if not ap.get('isEnvNet', False): continue
+          chan = ap['channel']
+          if chan in own_chans:
+            sameChan+=1
+          else:
+            otherChans+=1
+        print('multigraph neighbors_' + freq + 'ghz')
+        print(freq + 'ghz_samechan.value ' + str(sameChan))
+        print(freq + 'ghz_otherchans.value ' + str(otherChans))
+
+  def print_config(self) -> None:
+    freqs = get_freqs()
+    modes = get_modes()
+    for freq in freqs:
+      if 'freqs' in modes:
+        print("multigraph bandwidth_" + freq + 'ghz')
+        print("graph_title WIFI " + freq + "GHz bandwidth usage")
+        print("graph_vlabel percent")
+        print("graph_category network")
+        print("graph_args --lower-limit 0 --upper-limit 100 --rigid")
+        print("graph_order " + freq + "ghz_recv " + freq + "ghz_send")
+        for p,l in {'recv' : 'receive', 'send': 'send'}.items():
+          multiP = freq + 'ghz_' + p
+          print(multiP + '.label ' + l)
+          print(multiP + '.type GAUGE')
+          print(multiP + '.draw AREASTACK')
+      if 'neighbors' in modes:
+        print("multigraph neighbors_" + freq + 'ghz')
+        print("graph_title WIFI " + freq + "GHz neighbor APs")
+        print("graph_vlabel number of APs")
+        print("graph_category network")
+        print("graph_args --lower-limit 0")
+        print("graph_order " + freq + "ghz_samechan " + freq + "ghz_otherchans")
+        for p,l in {'samechan' : 'same channel', 'otherchans': 'other channels'}.items():
+          multiP = freq + 'ghz_' + p
+          print(multiP + '.label ' + l)
+          print(multiP + '.type GAUGE')
+          print(multiP + '.draw AREASTACK')
+
 
 if __name__ == "__main__":
-  if len(sys.argv) == 2 and sys.argv[1] == 'config':
-    print_config()
-  elif len(sys.argv) == 2 and sys.argv[1] == 'autoconf':
-    print("yes")  # Some docs say it'll be called with fetch, some say no arg at all
-  elif len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] == 'fetch'):
-    try:
-      print_wifi_load()
-    except Exception as e:
-      sys.exit("Couldn't retrieve fritzbox wifi load: " + str(e))
+  main_handler(FritzboxWifiLoad(FritzboxInterface()))

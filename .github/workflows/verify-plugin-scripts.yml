@@ -1,0 +1,36 @@
+name: Verify Plugin Scripts
+
+on: [push,workflow_dispatch,pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.9", "3.10", "3.11", "3.12", "3.13", "3.14" ]
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+    - name: Install dependencies
+      run: |
+        uv sync --group dev
+    - name: Analysing the code with pylint
+      run: |
+        uv run pylint --errors-only $(find src/ -name "*.py" | xargs)
+    - name: Running tests
+      run: |
+        uv run pytest --cov
+    - name: Archive production artifacts
+      if: ${{ matrix.python-version == '3.14' }}  # @see https://devguide.python.org/versions/
+      uses: actions/upload-artifact@v7
+      with:
+        name: fritzbox-munin-plugins
+        path: src/fritzbox*.py
